@@ -1,7 +1,6 @@
 from controller import Supervisor
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import Twist
 from std_msgs.msg import String
 import math
 
@@ -39,14 +38,12 @@ class WebotsROS2Node(Node):
         # Lógica de batería
         self.battery_level = 100
         self.step_count = 0
-        self.battery_drain_interval = 50
+        self.battery_drain_interval = 40
 
         # Variables
         self.linear_velocity = 0.0
         self.angular_velocity = 0.0
         self.current_command = None
-        self.obstacle_detected = False
-        self.avoidance_state = 0
         self.stopped_by_human = False
 
         # Variables para giro de 180 grados
@@ -56,7 +53,6 @@ class WebotsROS2Node(Node):
         # Variables para esquivar objetos
         self.avoiding_object = False
         self.avoidance_start_time = None
-        self.avoidance_duration = 3.0  # Duración total de la maniobra en segundos
 
         # Variables para mensajes de estado
         self.last_message = None  # Almacena el último mensaje mostrado
@@ -72,15 +68,22 @@ class WebotsROS2Node(Node):
             self.step_count = 0
             print(f"Battery level: {self.battery_level}%")
 
-            if 0 < self.battery_level <= 10:
-                print("Battery critically low! Stopping motors.")
-                self.left_motor.setVelocity(0.0)
-                self.right_motor.setVelocity(0.0)
-
             if self.battery_level == 0:
-                print("Battery depleted. Shutting down the robot.")
-                rclpy.shutdown()
-                exit(0)
+                    # Si la batería es 0, apagarse.
+                    print("Battery depleted. Shutting down the robot.")
+                    self.left_motor.setVelocity(0.0)
+                    self.right_motor.setVelocity(0.0)
+                    rclpy.shutdown()
+                    exit(0)
+            elif self.battery_level <= 10:
+                # Solo detenerse si no hay comandos activos
+                if not self.current_command:
+                    print("Battery critically low! Stopping motors as no active command is detected.")
+                    self.left_motor.setVelocity(0.0)
+                    self.right_motor.setVelocity(0.0)
+                else:
+                    print("Battery critically low, but active command detected. Continuing operation.")
+
 
     def detect_obstacle_with_lidar(self, min_distance=0.3, max_distance=1.5):
         depth_data = self.lidar.getRangeImage()
@@ -121,13 +124,6 @@ class WebotsROS2Node(Node):
                         return "wall"
         return "unknown"
 
-
-    def avoid_obstacle(self):
-        print("Avoiding obstacle: Turning right.")
-        self.linear_velocity = 0.0
-        self.angular_velocity = 1.0
-        self.control_logic()
-
     def turn_around(self):
         self.print_message_once("Wall detected. Starting 180-degree turn.")
         self.linear_velocity = 0.0
@@ -152,15 +148,17 @@ class WebotsROS2Node(Node):
             self.current_command = command
             print(f"Processing command: {command}")
 
-            self.obstacle_detected = False
             self.stopped_by_human = False
 
             if command == "avanza":
                 self.linear_velocity = 5.0
                 self.angular_velocity = 0.0
             elif command == "para":
+                # Detener completamente el robot y cancelar comandos activos
+                print("Stopping robot and canceling active commands.")
                 self.linear_velocity = 0.0
                 self.angular_velocity = 0.0
+                self.current_command = None  # Limpiar comando actual
             elif command == "gira_izquierda":
                 self.linear_velocity = 0.0
                 self.angular_velocity = 0.5
@@ -177,7 +175,7 @@ class WebotsROS2Node(Node):
             self.last_message = message
 
     def control_logic(self):
-        if self.battery_level > 10:
+        if self.battery_level > 0:
             if self.turning_180:
             # Durante el giro de 180 grados
                 if self.turn_steps_remaining > 0:
@@ -215,7 +213,6 @@ class WebotsROS2Node(Node):
                     # Fin de la maniobra
                     self.print_message_once("Avoidance maneuver completed.")
                     self.avoiding_object = False
-                    self.obstacle_detected = False  # Reactiva la detección
                     self.left_motor.setVelocity(0.0)
                     self.right_motor.setVelocity(0.0)
             else:
@@ -224,9 +221,6 @@ class WebotsROS2Node(Node):
                 right_speed = ((self.linear_velocity + self.angular_velocity) * wheel_distance) / 2
                 self.left_motor.setVelocity(left_speed)
                 self.right_motor.setVelocity(right_speed)
-        elif self.obstacle_detected:
-            self.left_motor.setVelocity(0.0)
-            self.right_motor.setVelocity(0.0)
 
     def step(self):
         rclpy.spin_once(self, timeout_sec=0.01)
@@ -248,7 +242,6 @@ class WebotsROS2Node(Node):
                 self.turning_180 = False
                 self.angular_velocity = 0.0
                 self.linear_velocity = 5.0  # Configura velocidad hacia adelante
-                self.obstacle_detected = False  # Reactiva la detección
                 self.control_logic()
             return True
 
